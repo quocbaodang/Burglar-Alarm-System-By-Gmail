@@ -1,0 +1,341 @@
+#include <msp430g2553.h>        // Thu vien msp430g2553
+#include <stdbool.h>            // Dung ham bool
+#include "stdio.h"              // Dung ham sprintf
+
+// Cac bien
+unsigned char check = 1;             // Che do mac dinh ban dau la bat canh bao
+unsigned char dht[6];           // Mang chua du lieu cua DHT11
+//dht[0] First byte will have only start bit
+//dht[1] phan thuc Do am
+//dht[2] phan thap phan Do am
+//dht[3] phan thuc Nhiet do
+//dht[4] phan thap phan Nhiet do
+//dht[5] Check Sum
+
+/*=========================== Thu vien LCD ==========================*/                   
+
+#define CMD			0
+#define DATA		        1
+
+#define LCD_OUT		        P2OUT
+#define LCD_DIR		        P2DIR
+#define D4			BIT4
+#define D5			BIT5
+#define D6			BIT6
+#define D7			BIT7
+#define RS			BIT2
+#define EN			BIT3
+
+
+// Delay function for producing delay in 0.1 ms increments
+void delay(int t)
+{
+	int i;
+	for(i=t; i > 0; i--)
+		__delay_cycles(1000);
+}
+
+// Function to pulse EN pin after data is written
+void pulseEN(void)
+{
+	LCD_OUT |= EN;
+	delay(1);
+	LCD_OUT &= ~EN;
+	delay(1);
+}
+
+//Function to write data/command to LCD
+void lcd_write(int value, int mode)
+{
+	if(mode == CMD)
+		LCD_OUT &= ~RS;				// Set RS -> LOW for Command mode
+	else
+		LCD_OUT |= RS;				// Set RS -> HIGH for Data mode
+
+	LCD_OUT = ((LCD_OUT & 0x0F) | (value & 0xF0));				// Write high nibble first
+	pulseEN();
+	delay(1);
+
+	LCD_OUT = ((LCD_OUT & 0x0F) | ((value << 4) & 0xF0));		// Write low nibble next
+	pulseEN();
+	delay(1);
+}
+
+// Function to print a string on LCD
+void lcd_print(char *s)
+{
+	while(*s)
+	{
+		lcd_write(*s, DATA);
+                delay(10);
+		s++;
+	}
+}
+
+// Function to move cursor to desired position on LCD
+void lcd_setCursor(int row, int col)
+{
+	const int row_offsets[] = { 0x00, 0x40};
+	lcd_write(0x80 | (col + row_offsets[row]), CMD);
+	delay(1);
+}
+
+// Initialize LCD
+void lcd_init()
+{
+	P2SEL &= ~(BIT6+BIT7);
+	LCD_DIR |= (D4+D5+D6+D7+RS+EN);
+	LCD_OUT &= ~(D4+D5+D6+D7+RS+EN);
+
+	delay(150);						// Wait for power up ( 15ms )
+	lcd_write(0x33, CMD);			// Initialization Sequence 1
+	delay(150);						// Wait ( 4.1 ms )
+	lcd_write(0x32, CMD);			// Initialization Sequence 2
+	delay(100);						// Wait ( 100 us )
+
+	// All subsequent commands take 40 us to execute, except clear & cursor return (1.64 ms)
+
+	lcd_write(0x28, CMD); 			// 4 bit mode, 2 line
+	delay(100);
+
+	lcd_write(0x0F, CMD); 			// Display ON, Cursor ON, Blink ON
+	delay(100);
+
+	lcd_write(0x01, CMD); 			// Clear screen
+	delay(200);
+
+	lcd_write(0x06, CMD); 			// Auto Increment Cursor
+	delay(100);
+
+	lcd_setCursor(0,0); 			// Goto Row 1 Column 1
+}
+
+void lcd_clear()
+{
+        lcd_write(0x01, CMD);        // display off
+        delay(200);     // wait for LCD
+}
+
+/*========================== Thu vien DHT11 ==============================*/
+// Doc du lieu tu DHT11
+
+char read_dht(unsigned char *p)
+{
+                                                                // Note: TimerA must be continuous mode (MC_2) at 1 MHz
+        const unsigned b = BIT0;                                    // I/O bit
+        const unsigned char *end = p + 6;                           // End of data buffer
+        register unsigned char m = 1;                               // First byte will have only start bit
+        register unsigned st, et;                                   // Start and end times
+                                                                //
+        p[0] = p[1] = p[2] = p[3] = p[4] = p[5] = 0;                // Clear data buffer
+                                                                //
+        P2OUT &= ~b;                                                // Pull low
+        P2DIR |= b;                                                 // Output
+        P2REN &= ~b;                                                // Drive low
+        st = TAR; while((TAR - st) < 18000);                        // Wait 18 ms
+        P2REN |= b;                                                 // Pull low
+        P2OUT |= b;                                                 // Pull high
+        P2DIR &= ~b;                                                // Input
+                                                                //
+        st = TAR;                                                   // Get start time for timeout
+        while(P2IN & b) if((TAR - st) > 100) return -1;             // Wait while high, return if no response
+        et = TAR;                                                   // Get start time for timeout
+        do {                                                        //
+            st = et;                                                // Start time of this bit is end time of previous bit
+            while(!(P2IN & b)) if((TAR - st) > 100) return -2;      // Wait while low, return if stuck low
+            while(P2IN & b) if((TAR - st) > 200) return -3;         // Wait while high, return if stuck high
+            et = TAR;                                               // Get end time
+            if((et - st) > 110) *p |= m;                            // If time > 110 us, then it is a one bit
+            if(!(m >>= 1)) m = 0x80, ++p;                           // Shift mask, move to next byte when mask is zero
+        } while(p < end);                                           // Do until array is full
+                                                                //
+        p -= 6;                                                     // Point to start of buffer
+        if(p[0] != 1) return -4;                                    // No start bit
+        if(((p[1] + p[2] + p[3] + p[4]) & 0xFF) != p[5]) return -5; // Bad checksum
+                                                                //
+        return 0;                                                   // Good read
+}
+
+// Hien thi nhiet do + do am len LCD
+void DHT11()
+{
+        char nhietDo[20];
+        char doAm[10];
+        read_dht(dht); 
+        sprintf(nhietDo, "%d",dht[3]);    
+        lcd_setCursor(0,0);
+        lcd_print("Nhiet do: ");
+        lcd_setCursor(0,10);
+        lcd_print(nhietDo);
+        
+        sprintf(doAm,"%d",dht[1]);    
+      	lcd_setCursor(1,0);
+	lcd_print("Do am: ");
+      	lcd_setCursor(1,10);
+	lcd_print(doAm);   
+       
+        
+}
+      
+
+// Cau hinh xung clock
+void Config_CLK()                          // Set nguon xung clock la 1MHz
+{
+        if (CALBC1_1MHZ==0xFF)                      // If calibration constant erased
+        {
+            while(1);                               // do not load, trap CPU!!
+        }
+        DCOCTL = 0;                                 // Select lowest DCOx and MODx settings
+        BCSCTL1 = CALBC1_1MHZ;                      // Set DCO
+        DCOCTL = CALDCO_1MHZ;
+    
+}
+
+// Cau hinh UART
+void Config_UART()
+{
+        P1SEL = BIT1 + BIT2;	// P1.1 UCA0RXD input
+        P1SEL2 = BIT1 + BIT2; // P1.2 UCA0TXD output
+
+        UCA0CTL1 |= UCSWRST;
+        UCA0CTL0 = 0x00;
+
+        UCA0CTL1 = UCSSEL_2 | UCSWRST; // USCI Clock = SMCLK,USCI_A0 disabled
+
+        UCA0MCTL = UCBRF_8 |  UCBRS_0 | UCOS16; 
+
+        UCA0BR0 = 6;   // 9600baud
+        UCA0BR1 = 00;
+
+
+        UCA0CTL1 &= ~UCSWRST;
+
+        IE2 |= UCA0RXIE;
+
+        _BIS_SR( GIE);
+}
+
+// Gui du lieu 1 byte qua UART
+void send(unsigned char byte)
+{
+        while(!(IFG2 & UCA0TXIFG));
+        UCA0TXBUF = byte;
+}
+
+// Bat canh bao trom
+void BatChongTrom()
+{
+        lcd_clear();
+        lcd_setCursor(0,0);
+        lcd_print("Bat canh bao!");
+        delay(3000);
+        lcd_clear();
+  
+        while(1)
+        {
+            if((P1IN&BIT3)!=BIT3) break;
+             DHT11();
+             lcd_setCursor(0,14);
+             lcd_print("ON");
+                
+             if((P1IN&BIT4)!= BIT4)
+             {
+                  send('2');
+                  P1OUT |= BIT0;
+                  lcd_clear();
+                  lcd_setCursor(0,0);
+                  lcd_print("Co nguoi di vao!");
+                  delay(2000);
+                  lcd_setCursor(1,0);
+                  lcd_print("Dang gui mail...");
+                  delay(5000);  
+                  delay(3000);
+                  lcd_clear();
+
+              }
+              P1OUT &= ~BIT0;
+              if((P1IN&BIT3)!=BIT3) break;
+        }
+}
+
+// Tat canh bao trom
+void TatChongTrom()
+{
+        lcd_clear();
+        lcd_setCursor(0,0);
+        lcd_print("Tat canh bao!");
+        delay(3000);
+        lcd_clear();
+        while(1)
+        {
+                if((P1IN&BIT3)!=BIT3) break;
+               DHT11();
+               lcd_setCursor(0,13);
+               lcd_print("OFF");
+               
+               if((P1IN&BIT3)!=BIT3) break;
+        }
+}
+
+// Chuong trinh chinh
+void main(void)
+{
+	WDTCTL = WDTPW + WDTHOLD; // stop watchdog
+        P1OUT |= BIT6 + BIT0;
+        P1OUT &= ~(BIT6+BIT0);
+        P1DIR |= BIT6 + BIT0;
+        P1DIR &= ~BIT3;
+        P1REN |= BIT3;
+        P1OUT |= BIT3;
+        Config_CLK();
+        Config_UART();
+        TACTL = TASSEL_2 | MC_2;  
+       // bool check = true;
+        
+        P1IE |= BIT3;
+        P1IES |= BIT3;
+        P1IFG &= ~BIT3;
+        
+	lcd_init();
+	lcd_setCursor(0,0);
+	lcd_print("Vi xu ly");
+	lcd_setCursor(1,3);
+	lcd_print("Canh bao trom");
+        delay(5000);
+        lcd_clear();
+	//lcd_setCursor(0,0);
+         __bis_SR_register(GIE);
+
+        while(1)
+        {
+            if(check==1)
+            {
+                delay(10);
+                send('1');
+                P1OUT |= BIT6;
+                BatChongTrom();
+  
+            }
+            else
+            {
+                delay(10);
+                send('0');
+                P1OUT &= ~BIT6;
+                TatChongTrom();
+            }
+         }
+}
+
+
+// Chuyen doi trang thai bat tat canh bao
+#pragma vector = PORT1_VECTOR
+__interrupt void Port(void)
+{        
+    
+  if(check==1) {delay(50); check=0;} 
+  else {delay(50); check=1;}
+        P1IFG &= ~BIT3;
+}
+
+
+
