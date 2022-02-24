@@ -17,3 +17,5 @@ LED sẽ tắt và ESP sẽ gửi một mail thông báo đã tắt cảnh báo.
 LCD sẽ hiển thị nhiệt độ, độ ẩm của phòng và chữ “OFF”. Khi ở chế
 độ tắt cảnh báo, MCU không nhận dữ liệu từ cảm biến vật cản hồng
 ngoại
+
+Video demo:  https://youtu.be/hWzx3pw2aIo
